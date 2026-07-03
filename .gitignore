@@ -1,0 +1,35 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Env files
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local databases and vector stores
+chroma_db2/
+*.db
+*.sqlite
+
+# OS files
+.DS_Store
+Thumbs.db
