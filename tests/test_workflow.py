@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from rag import HybridRetriever
 from state_store import StateStore, family_identity, sessions, messages
 from workflow import ConversationRAG, query_dates
-from test_rag import Store, record
+from tests.test_rag import Store, record
 
 
 def ctx(**values):

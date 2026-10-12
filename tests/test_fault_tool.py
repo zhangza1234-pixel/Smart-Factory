@@ -8,8 +8,8 @@ from sqlalchemy import text
 
 from rag import HybridRetriever
 from workflow import ConversationRAG
-from test_workflow import StateFixture, ScriptLLM, plan, verified
-from test_rag import Store
+from tests.test_workflow import StateFixture, ScriptLLM, plan, verified
+from tests.test_rag import Store
 
 
 def fault_step(**filters):

@@ -3,6 +3,10 @@ import argparse
 import json
 from pathlib import Path
 from statistics import mean
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 
 def evaluate(retriever, cases, context_type, state=None):

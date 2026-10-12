@@ -184,7 +184,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(execute.call_args.args[2], ['A', '%' + injection + '%'])
 
     def test_unmanaged_vector_records_are_excluded(self):
-        from test_rag import Store, record
+        from tests.test_rag import Store, record
         store = Store([record('legacy', '旧版压力上限10MPa')])
         rag = type('RAG', (), {'retriever': HybridRetriever(store)})()
         with patch.object(mains, 'init_rag', return_value=rag):

@@ -1,2 +1,0 @@
-# Compatibility entry point; requirements.txt is the canonical dependency list.
--r requirements.txt

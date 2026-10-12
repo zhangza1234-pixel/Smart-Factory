@@ -4,6 +4,8 @@
 
 腾讯云 Docker 部署、数据迁移及 Git 更新步骤见 [部署说明](deploy/README.md)。云端使用独立的 `compose.deploy.yaml` 和 `.env.deploy`，不影响现有本地配置。
 
+使用 Navicat、DBeaver 查看或修改云端数据库，见[通过 SSH 隧道连接云端 MySQL](deploy/README.md#通过-ssh-隧道连接云端-mysql)，包含端口映射、Windows 保活命令和断线重连说明。
+
 ## 本次 RAG 升级
 
 - 默认按标题层级和段落组织，章节内超长内容递归切分（默认 800 字、120 字重叠），保留章节路径、文件名、PDF 页码和正文位置。
@@ -67,7 +69,7 @@ docker compose --env-file .env.deploy -f compose.deploy.yaml exec backend python
 
 升级会终止旧演示登录；旧演示用户的会话和记忆保留在库中，但不会自动迁移给新 UUID 账号，以免错误继承他人的历史。演示资料导入脚本现在要求专家登录，每次只导入该账号绑定产线的资料。
 
-回归验证：`.\.venv\Scripts\python.exe -m unittest test_auth test_api test_business`，其中 `test_auth` 通过完整身份认证链路验证所有业务路由，另两组测试隔离认证依赖以验证既有业务规则。
+回归验证：`.\.venv\Scripts\python.exe -m unittest tests.test_auth tests.test_api tests.test_business`，其中 `tests.test_auth` 通过完整身份认证链路验证所有业务路由，另两组测试隔离认证依赖以验证既有业务规则。
 
 ## MySQL 怎么配置
 
@@ -161,7 +163,7 @@ RAG_MAX_HOPS=3
 
 规划器最多生成3个检索步骤；后续步骤根据前置原文补齐实体、型号和工况后检索。支持文档工具、限定租户/工厂/产线的只读设备参数工具，以及按租户共享的只读 SQL 故障工具，不允许模型自由生成 SQL。设备和故障库是当前快照，历史日期不能拿当前记录充当历史事实。比较与计算在回答阶段完成，不额外伪造检索步骤。
 
-故障问题优先查询 MySQL `fault_knowledge`，支持代码精确匹配、设备类型和现象 / 处理步骤关键词筛选。明确代码的简单查询及“那严重程度是什么”等短追问使用本地路由，不依赖模型规划；设备限定、现象检索和混合任务由规划器处理。同一代码对应多个设备类型时先追问，不混用处理方案；超过10条匹配时要求缩小条件。SQL 无匹配时补查有效文档，引用和检索轨迹会区分 MySQL 与文档来源；两者都无证据时不生成处理结论。故障表单新增、修改后，问答下一次查询直接读取最新数据，无需重新上传文档或生成向量。也支持先查 SQL 故障，再按设备与代码联查文档，以及由前置文档提取代码后查询 SQL。回归命令：`.\.venv\Scripts\python.exe -m unittest test_fault_tool test_business test_api test_rag test_chunking test_workflow`。
+故障问题优先查询 MySQL `fault_knowledge`，支持代码精确匹配、设备类型和现象 / 处理步骤关键词筛选。明确代码的简单查询及“那严重程度是什么”等短追问使用本地路由，不依赖模型规划；设备限定、现象检索和混合任务由规划器处理。同一代码对应多个设备类型时先追问，不混用处理方案；超过10条匹配时要求缩小条件。SQL 无匹配时补查有效文档，引用和检索轨迹会区分 MySQL 与文档来源；两者都无证据时不生成处理结论。故障表单新增、修改后，问答下一次查询直接读取最新数据，无需重新上传文档或生成向量。也支持先查 SQL 故障，再按设备与代码联查文档，以及由前置文档提取代码后查询 SQL。回归命令：`.\.venv\Scripts\python.exe -m unittest tests.test_fault_tool tests.test_business tests.test_api tests.test_rag tests.test_chunking tests.test_workflow`。
 
 接口返回 `retrieval_steps`，包含日期、问题、依赖、工具和缺失原因。任何必要步骤缺证据就拒绝完整结论；证据超上下文预算时要求缩小范围。
 
@@ -169,7 +171,7 @@ RAG_MAX_HOPS=3
 
 ## 补充工业演示数据
 
-已提供 `demo_content.py` 和 `scripts/enrich_demo.py`，覆盖现有4条产线、24类设备，包含168条补充设备参数、48个虚构故障案例及16份带版本的演示资料。全部明确标注为演示，不是实际设备参数、报警码或正式标准。
+已提供 `scripts/demo_content.py` 和 `scripts/enrich_demo.py`，覆盖现有4条产线、24类设备，包含168条补充设备参数、48个虚构故障案例及16份带版本的演示资料。全部明确标注为演示，不是实际设备参数、报警码或正式标准。
 
 ```powershell
 # 查看业务表数量和产线归属，不写入
@@ -250,12 +252,12 @@ BM25 命中可以独立进入候选，因此距离阈值只约束向量通道。
 .\.venv\Scripts\python.exe -m unittest discover -v
 ```
 
-原 `tests.py` 保留为显式运行的 DashScope 联通检查，导入或测试发现时不会访问外部模型。
+DashScope 联通检查位于 `scripts/check_embedding.py`，需显式运行，会调用外部嵌入接口；离线测试发现不会执行它。
 
 在 tenant_A / plant_A1 / line_a1 范围，以操作员可见权限上传 `examples/故障手册.txt` 后执行：
 
 ```powershell
-.\.venv\Scripts\python.exe evaluate_rag.py examples/evaluation.jsonl --output evaluation-report.json
+.\.venv\Scripts\python.exe scripts/evaluate_rag.py examples/evaluation.jsonl --output evaluation-report.json
 ```
 
 评测输出文件级 Recall@K、MRR、无答案问题的空召回正确率，以及逐题结果与耗时。
@@ -269,7 +271,7 @@ BM25 命中可以独立进入候选，因此距离阈值只约束向量通道。
 
 ## 不懂 SQL 的人员如何维护业务数据
 
-系统设置按任务分为「文档上传」「版本管理」「运行状态」「账户与权限」，只加载当前入口。上传页默认只展开基本信息，版本日期、发布选项和切分方式在折叠区；版本管理提供中文目录、筛选和文档选择，不需要手填 ID。运行状态提供手动刷新与最近检查时间。账户页明确展示演示登录的权限说明，原来未落库的“添加用户”表单已移除。
+系统设置按任务分为「文档上传」「版本管理」「运行状态」「账户与权限」，只加载当前入口。上传页默认只展开基本信息，版本日期、发布选项和切分方式在折叠区；版本管理提供中文目录、筛选和文档选择，不需要手填 ID。运行状态提供手动刷新与最近检查时间。账户页展示当前账号的真实权限，专家可以分配本租户账号、禁用账号和重置密码。
 
 登录后进入「设备参数」或「故障库」，页面会直接列出已有数据。上方可以按关键词、设备筛选；故障还可以按严重程度筛选，每页显示 50 条，并显示完整记录总数。
 
@@ -281,11 +283,11 @@ BM25 命中可以独立进入候选，因此距离阈值只约束向量通道。
 
 原生 MySQL 安装若使用 `factory_app` 等独立账户，管理员需赋予 `device_parameters`、`fault_knowledge` 的 SELECT、INSERT、UPDATE 权限；更新后的 `scripts/init_mysql.py` 会配置这些业务表权限，无需重置现有数据。
 
-业务维护接口：`POST /business/equipment/list`、`POST /business/equipment/save`、`POST /business/faults/list`、`POST /business/faults/save`。新增省略 `id`；修改必须携带列表返回的 `id`、`revision`，接口在事务中检查访问范围、重复和并发修改。离线回归：`.\.venv\Scripts\python.exe -m unittest test_business test_api test_rag test_chunking test_workflow`。
+业务维护接口：`POST /business/equipment/list`、`POST /business/equipment/save`、`POST /business/faults/list`、`POST /business/faults/save`。新增省略 `id`；修改必须携带列表返回的 `id`、`revision`，接口在事务中检查访问范围、重复和并发修改。离线回归：`.\.venv\Scripts\python.exe -m unittest tests.test_business tests.test_api tests.test_rag tests.test_chunking tests.test_workflow`。
 
 ## 部署前尚需完成的事项
 
-当前登录页面为演示逻辑，user_ctx 由客户端提交，尚未接入身份认证。记忆归属校验不能防止客户端冒充其他用户名/角色，正式使用前必须改为服务端可信身份。检索范围校验不能替代认证，本版本适用于本地开发。
+当前已接入服务端账号认证、可信访问范围和登录凭证撤销。公网使用前仍需配置 HTTPS、数据库备份及运维监控，部署步骤见 `deploy/README.md`。
 旧 `/execute-sql` 已停用（410），避免任意 SQL 绕过新增会话与记忆隔离；故障页改用绑定参数的 `/query-faults`，工艺文档页展示真实有效版本目录。旧客户端需要改用专用查询接口。
 仓库旧版本曾包含疑似密钥字符串，当前已移除并改为环境变量读取；如果该密钥曾有效，请在服务商控制台轮换。
 
@@ -296,7 +298,12 @@ BM25 命中可以独立进入候选，因此距离阈值只约束向量通道。
 - state_store.py / workflow.py：权威版本选择、MySQL/Redis 会话、摘要、显式记忆、多跳与证据核验。
 - ingestion.py / chunking.py：加载、章节组织、递归切分、元数据和稳定 ID。
 - compose.yaml / database / scripts/init_mysql.py：MySQL 启动、建表、演示数据和原生初始化。
-- init_chramdb.py / models.py：模型与向量库配置。
+- init_chramdb.py：向量库与嵌入模型初始化；回答模型在 mains.py 中按环境变量配置。
+- auth.py / api_client.py：账号、登录凭证和前端认证请求。
 - app_frontend.py / business_ui.py / settings_ui.py：问答、业务中文表单和按任务分区的设置页面。
-- test_rag.py / test_api.py / test_workflow.py：离线回归测试。
-- evaluate_rag.py / examples：可复用检索评测入口和演示资料。
+- tests/：认证、业务、RAG、切分与多轮会话的离线回归测试。
+- scripts/：数据库及专家初始化、演示数据、检索评测和模型联通检查脚本。
+- examples/：检索评测数据集和演示文档。
+- logs/：自动生成的运行日志，不提交 Git。
+
+根目录保留应用模块、依赖入口和部署配置；测试统一放入 `tests/`，辅助工具统一放入 `scripts/`。依赖使用 `requirements.txt` 安装。`.env`、`.venv/` 和 `chroma_db2/` 是本地配置、运行环境及知识库数据，不属于可随意清理的临时文件。

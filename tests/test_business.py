@@ -78,8 +78,8 @@ class BusinessTests(unittest.TestCase):
         from state_store import StateStore
         from workflow import ConversationRAG
         from rag import HybridRetriever
-        from test_rag import Store
-        from test_workflow import ScriptLLM, verified
+        from tests.test_rag import Store
+        from tests.test_workflow import ScriptLLM, verified
         state = StateStore(self.engine, redis_url='')
         self.assertEqual(self.save(FAULT, kind='faults').status_code, 200)
         for expected in ('停机检查', '修订后的步骤'):

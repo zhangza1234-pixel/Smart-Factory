@@ -23,6 +23,7 @@ backups/
 .vscode/
 
 # Logs
+logs/
 *.log
 
 # Test / cache

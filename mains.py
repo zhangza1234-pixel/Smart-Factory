@@ -1,6 +1,6 @@
 # main.py
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Dict, List
 from datetime import datetime, date
 from uuid import UUID
@@ -28,7 +28,9 @@ from dotenv import load_dotenv
 load_dotenv()  # 加载 .env 文件中的环境变量
 
 # 配置日志
-log_filename = f'main_{datetime.now().strftime("%Y-%m-%d")}.log'
+log_directory = Path(__file__).resolve().parent / 'logs'
+log_directory.mkdir(exist_ok=True)
+log_filename = log_directory / f'main_{datetime.now().strftime("%Y-%m-%d")}.log'
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',

@@ -12,5 +12,7 @@ data
 backups
 *.sql.gz
 *.log
+logs
+tests
 .agents
 .codex

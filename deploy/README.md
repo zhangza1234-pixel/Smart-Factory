@@ -73,6 +73,62 @@ ssh -N -L 8080:127.0.0.1:8080 ubuntu@服务器公网IP
 
 保持这个终端运行，浏览器访问 `http://localhost:8080`。检查系统状态、设备参数、故障查询、知识库检索、引用、旧会话恢复，并上传一份测试文档。重启容器后确认文档仍可检索。HTTP 进程健康检查不代表整个 RAG 业务可用，仍需完成这些操作检查。
 
+### 通过 SSH 隧道连接云端 MySQL
+
+可以在 Windows 上使用 Navicat、DBeaver 等数据库工具，通过 SSH 隧道查看和维护云端 MySQL。连接的是云端实际数据库：新增、修改和删除并提交后，会直接改变云端数据。SSH 隧道只提供连接通道，不会创建本地副本或同步两份数据库。
+
+**服务器首次配置：** 在云服务器项目目录执行。本文示例目录为 `/opt/smart-factory`；如果你的项目在 `~/Smart-Factory`，请改用该目录。
+
+```bash
+cd /opt/smart-factory
+cat > compose.mysql-access.yaml <<'EOF'
+services:
+  mysql:
+    ports:
+      - "127.0.0.1:3307:3306"
+EOF
+
+sudo docker compose --env-file .env.deploy \
+  -f compose.deploy.yaml \
+  -f compose.mysql-access.yaml \
+  up -d --no-deps --wait mysql
+```
+
+此操作会重建 MySQL 容器，连接会短暂中断；沿用 `./data/mysql` 中的已有数据。映射仅监听服务器本机 `127.0.0.1:3307`，无需在安全组开放 3306 或 3307。后端仍通过 Docker 内网的 `mysql:3306` 连接，不需要修改 `.env.deploy` 中的数据库连接配置。
+
+以后执行可能创建或重建 MySQL 的 Compose 命令（包括备份后恢复全部服务）时，都要同时指定 `-f compose.deploy.yaml -f compose.mysql-access.yaml`，否则可能移除端口映射。例如：
+
+```bash
+sudo docker compose --env-file .env.deploy \
+  -f compose.deploy.yaml \
+  -f compose.mysql-access.yaml \
+  up -d --wait --wait-timeout 300
+```
+
+**Windows 建立隧道：** 在本地 PowerShell 执行，替换 SSH 用户和服务器公网 IP；如需指定私钥，在 `ssh` 后添加 `-i "C:\路径\私钥文件"`。
+
+```powershell
+ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 127.0.0.1:13306:127.0.0.1:3307 ubuntu@服务器公网IP
+```
+
+连接路径为：Windows `127.0.0.1:13306` → SSH 隧道 → 云服务器 `127.0.0.1:3307` → MySQL 容器 `3306`。使用平时登录云服务器的 SSH 密码或私钥认证；私钥口令与 MySQL 密码不同。连接建立后终端没有持续输出是正常的，保持该窗口打开即可。
+
+在 Navicat 或 DBeaver 中创建普通 MySQL 连接，按下面填写；数据库工具内不需要再次开启 SSH 隧道：
+
+| 配置项 | 内容 |
+| --- | --- |
+| 主机 | `127.0.0.1` |
+| 端口 | `13306` |
+| 用户名 | 云端 `.env.deploy` 中的 `MYSQL_USER`，通常为 `factory_app` |
+| 密码 | 云端 `.env.deploy` 中的 `MYSQL_PASSWORD` |
+| 数据库 | 云端 `.env.deploy` 中的 `MYSQL_DATABASE`，默认 `factory_kb` |
+
+**长期保持与断线处理：** 隧道可以一直保持，但 PowerShell 窗口、电脑和网络连接需要保持运行。上述命令每30秒发送 SSH 保活请求，连续3次未响应会退出；保活不会自动重连。关闭窗口、电脑休眠、网络中断或服务器重启后，如果连接已断开，重新执行隧道命令，并让数据库工具重新连接。隧道断开只影响本地数据库工具访问，云端项目继续使用 Docker 内网连接数据库。
+
+用完后在隧道窗口按 `Ctrl+C` 关闭连接。如果提示本地端口已被占用，先检查是否已有隧道运行；也可以将命令中的本地端口 `13306` 改为 `13307`，并同步修改数据库工具的端口。只有隧道命令中的第一个端口是本地端口，服务器目标端口仍为 `3307`。
+
+账号创建、禁用和密码重置使用系统的“账户与权限”页面，确保执行密码哈希和登录凭证撤销逻辑；不要直接在账户表中填写明文密码。
+
 ## 4. 每次更新前备份
 
 先暂停应用写入；备份 MySQL 和 Chroma 时保持应用停止，以获得一致的数据快照：
@@ -88,6 +144,8 @@ sudo docker compose --env-file .env.deploy -f compose.deploy.yaml up -d --wait -
 ```
 
 检查 SQL 非空、导出命令成功、压缩包可列出内容，并将备份复制到另一台设备或对象存储。仅放在同一块云盘上不能防止云盘丢失。备份不包含密钥文件，`.env.deploy` 需要另外安全保管。
+
+如果已按上文启用 MySQL 隧道端口映射，恢复全部服务的 `up` 命令也需加入 `-f compose.mysql-access.yaml`，以保留映射。
 
 ## 5. 使用 Git 迭代
 
