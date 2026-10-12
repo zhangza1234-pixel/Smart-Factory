@@ -37,9 +37,37 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe -m streamlit run app_frontend.py
 ```
 
-前端选择专家角色，进入“系统设置 → 知识库管理”上传文档，然后在知识助手提问。
+先按下方“账号与身份隔离”初始化专家账号。专家登录后在“系统设置 → 文档上传”上传资料，在“账户与权限”分配账号。
 API 文档位于 http://127.0.0.1:8000/docs 。PDF、TXT、MD、DOCX 默认最多 20 MB；扫描 PDF 需要先 OCR。
 TXT/MD 支持 UTF-8 和 GB18030。普通文本没有页码，page=0；PDF 页码从 1 开始。
+
+## 账号与身份隔离
+
+系统不开放自助注册，也没有默认账号或默认密码。专家负责本租户的账号分配；一个账号绑定一个工厂、一个产线和一个角色。专家可给本租户其他产线分配账号，但自身的业务与文档访问仍限定在账号绑定范围。故障知识按现有规则在租户内共享，会话和长期记忆按账号隔离。
+
+已有数据库先执行 `scripts/init_mysql.py --admin-user root`（不带 `--seed`），补齐 `database/04_auth.sql` 中的账户表和应用账户的读写权限。此步骤保留现有业务和知识资料。新 Docker 数据目录会自动创建账户表；已有数据卷不会自动执行新增 SQL。
+
+在具有建表权限的本地数据库配置下，创建每个租户的首个专家（密码通过隐藏提示输入，至少12个字符）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/init_auth.py --username expert_a --tenant tenant_A --plant plant_A1 --line line_a1
+```
+
+云端使用部署环境执行相同命令：
+
+```powershell
+docker compose --env-file .env.deploy -f compose.deploy.yaml exec backend python scripts/init_auth.py --username expert_a --tenant tenant_A --plant plant_A1 --line line_a1
+```
+
+云端已有库需先由数据库管理员导入 `database/04_auth.sql`；如果应用账户不是 Docker 自动创建的库级账户，还需授予 `auth_users`、`auth_sessions` 的 SELECT/INSERT/UPDATE/DELETE 权限。首个专家创建后，在“系统设置 → 账户与权限”创建账号、禁用/启用账号或重置其他账号的密码。各租户首个专家通过上述命令分别创建，不允许从网页跨租户分配。
+
+`POST /auth/login` 接收 `username`、`password`，返回 `access_token`、`expires_at` 和权威 `user_ctx`。除 `/health` 和登录外，应用接口均要求 `Authorization: Bearer <access_token>`。原有业务请求继续传登录返回的 `user_ctx`，任何身份或访问范围不一致返回403；没有凭证、凭证过期或被撤销返回401。`GET /auth/me` 校验当前身份，`POST /auth/logout` 撤销当前登录。
+
+密码使用独立随机盐的 scrypt 哈希；数据库只保存会话令牌的 SHA-256 哈希。登录默认8小时过期（`AUTH_SESSION_SECONDS`），同账号连续5次错误密码后锁定15分钟。禁用、启用或重置密码都会撤销该账号已有登录。退出或登录失效会清空前端会话数据。公网登录需通过 HTTPS 访问。
+
+升级会终止旧演示登录；旧演示用户的会话和记忆保留在库中，但不会自动迁移给新 UUID 账号，以免错误继承他人的历史。演示资料导入脚本现在要求专家登录，每次只导入该账号绑定产线的资料。
+
+回归验证：`.\.venv\Scripts\python.exe -m unittest test_auth test_api test_business`，其中 `test_auth` 通过完整身份认证链路验证所有业务路由，另两组测试隔离认证依赖以验证既有业务规则。
 
 ## MySQL 怎么配置
 
@@ -81,19 +109,13 @@ Docker 创建的应用账户拥有该开发数据库的权限；正式部署应�
 .\.venv\Scripts\python.exe scripts/init_mysql.py --admin-user root --seed
 ```
 
-脚本创建数据库和缺失的表，导入演示记录，创建 factory_app 应用账户；业务表授予 SELECT，新增 rag_* 表额外授予 INSERT/UPDATE/DELETE。不需要演示数据时去掉 `--seed`。
+脚本创建数据库和缺失的表，导入演示记录，创建 factory_app 应用账户；业务表授予 SELECT（设备和故障表额外授予 INSERT/UPDATE），rag_* 与 auth_* 表额外授予 INSERT/UPDATE/DELETE。不需要演示数据时去掉 `--seed`。
 已有同名账户不会重置密码、已有记录不会覆盖；已有不同表结构需要另行迁移，CREATE TABLE IF NOT EXISTS 不会自动补列。
 如果已有 factory_app 账户，请在 `.env` 中填写它实际的密码。
 
 ### 检查连接
 
-重启后端以重新加载环境变量，然后运行：
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/db-status
-```
-
-返回 status=connected 即已连通。可用 tenant_A / plant_A1 / line_a1 在设备参数页查询“激光焊接机”，在故障库查询 F0012。
+重启后端以重新加载环境变量，以专家账号登录后在“系统设置 → 运行状态”检查连接。命令行调用 `/db-status` 时需携带专家登录返回的 Bearer 凭证。返回 status=connected 即已连通。可用 tenant_A / plant_A1 / line_a1 在设备参数页查询“激光焊接机”，在故障库查询 F0012。
 连接被拒绝时检查服务和端口；Access denied 时检查账户、密码及允许连接的主机；Unknown database/table 时先执行初始化。
 工艺文档目录初始为空；RAG 上传同步 rag_document_versions 和 Chroma，不同步旧 process_documents 目录，不保存原文件供下载。
 
@@ -129,7 +151,7 @@ RAG_MAX_HOPS=3
 
 未安装 Redis/Docker 也可以使用：Redis 失败会明确报告 `unavailable_mysql_fallback`，会话仍写 MySQL；服务重启后可恢复。只使用 MySQL 时将 REDIS_URL 留空。Redis 恢复后自动重新使用；缓存附带会话修订号，不能复活旧会话。Redis TTL 只控制缓存，MySQL 会话不会因此自动删除。
 
-- 前端每个会话使用 UUID，接口根据用户、租户、工厂、产线及角色校验归属。同会话并发提问返回409，防止消息顺序错乱。当前登录为演示逻辑，身份仍由客户端传入，尚不具备生产身份认证保证。
+- 前端每个会话使用 UUID，接口根据用户、租户、工厂、产线及角色校验归属。同会话并发提问返回409，防止消息顺序错乱。身份由服务端账号与登录凭证核验，客户端不能自行切换角色、用户或访问范围。
 - 每轮使用最近4轮及摘要改写独立问题；指代不明确时追问。历史回答不作为技术依据，每轮重新检索适用版本。
 - 未摘要消息超过字符阈值且多于8条时，按批次压缩较早消息，保留最近8条原文。结构化摘要保留实体、已确认事项、待解决问题及来源ID；失败保留原始记录，不写入失败摘要。原始消息仍保存在 MySQL。
 - 在“会话与长期记忆”明确保存偏好、背景或审核经验。最多50条；注入最多3条偏好及5条关键词相关背景/经验。关联来源失效或过期的记忆不注入；模型回答不会自动变成长期知识。记忆不替代正式文档。
@@ -154,13 +176,13 @@ RAG_MAX_HOPS=3
 .\.venv\Scripts\python.exe scripts/enrich_demo.py --inspect
 # 仅向 MySQL 补充设备参数和故障案例
 .\.venv\Scripts\python.exe scripts/enrich_demo.py
-# 后端启动后，同时注册文档版本、建立向量索引并补充工艺文档目录
-.\.venv\Scripts\python.exe scripts/enrich_demo.py --with-knowledge
+# 后端启动后，以专家身份导入该账号所属产线的知识资料（密码隐藏输入）
+.\.venv\Scripts\python.exe scripts/enrich_demo.py --with-knowledge --username expert_a
 ```
 
 脚本从本地 `.env` 读取连接配置，按业务唯一键跳过已有记录，不覆盖原数据；设备参数与故障案例同一事务提交。资料按“点检规则2025版/2026版、设备与工序说明、故障案例”每线4份组织，版本内容固定，重复运行不重复嵌入。文档逐份提交，途中失败可重试。
 
-演示范围：tenant_A/plant_A1/line_a1（模组装配）、tenant_A/plant_A2/line_a2（电芯封装）、tenant_B/plant_B1/line_b1（机械加工）、tenant_C/plant_C1/line_c1（SMT）。登录时需选择对应租户、工厂及产线。
+演示范围：tenant_A/plant_A1/line_a1（模组装配）、tenant_A/plant_A2/line_a2（电芯封装）、tenant_B/plant_B1/line_b1（机械加工）、tenant_C/plant_C1/line_c1（SMT）。登录账号必须由专家预先分配到对应租户、工厂及产线。知识导入每次只处理登录专家所属产线，其他产线请使用相应专家账号分别执行。
 可查询“RB1001 是什么故障？”、“PLC控制柜有哪些演示参数？”、“模组装配线今年和去年的演示点检规则有什么变化？”。旧记录 F0012/F0013 保留。
 
 ## 按标题、段落和递归切分
@@ -188,7 +210,7 @@ RAG_MAX_HOPS=3
 
 ## API
 
-`POST /query` 与 `POST /retrieve` 使用相同请求格式；后者仅检索，不调用回答模型：
+`POST /query` 与 `POST /retrieve` 使用相同请求格式，并携带登录凭证；下列 user_ctx 仅示意，实际需原样使用登录接口返回值。后者仅检索，不调用回答模型：
 
 ```json
 {
@@ -198,7 +220,7 @@ RAG_MAX_HOPS=3
     "tenant_id": "tenant_A",
     "plant_id": "plant_A1",
     "line_id": "line_a1",
-    "user_id": "engineer_li",
+    "user_id": "登录接口返回的账号UUID",
     "role": "操作员"
   }
 }
@@ -208,7 +230,7 @@ RAG_MAX_HOPS=3
 `/retrieve` 按相同日期及版本规则直接检索，不做问题规划或会话写入。
 `/upload-document` 使用 multipart：file、user_ctx（JSON字符串）、可选title、category、access_level、family_name、version、effective_from、可选effective_to、publish。未传版本默认为1，未传生效日期默认为今天；返回 document_id、版本状态、chunks、added_chunks、duplicate。
 
-管理接口（POST）：`/documents/list`；`/documents/{id}/status`（status=published/withdrawn）；`/sessions/{id}/history`；`/sessions/{id}/clear`；`/memories/list`；`/memories`；`/memories/{id}/delete`。每个请求均传 user_ctx；保存记忆另传 content、kind（preference/background/reviewed_experience）、可选source_id、valid_until。`GET /memory-status` 查看 MySQL/Redis 状态。
+管理接口（POST）：`/documents/list`；`/documents/{id}/status`（status=published/withdrawn）；`/sessions/{id}/history`；`/sessions/{id}/clear`；`/memories/list`；`/memories`；`/memories/{id}/delete`。每个请求均携带 Authorization: Bearer <access_token>，并传入登录返回的 user_ctx；保存记忆另传 content、kind（preference/background/reviewed_experience）、可选source_id、valid_until。`GET /memory-status` 查看 MySQL/Redis 状态。
 
 ## 调参与迁移
 

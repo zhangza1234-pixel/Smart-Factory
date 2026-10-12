@@ -1,5 +1,6 @@
 """Add fictional industrial content without replacing any existing business rows."""
 import argparse
+from getpass import getpass
 import json
 import os
 from pathlib import Path
@@ -51,7 +52,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--inspect', action='store_true', help='只查看业务表数量及产线范围')
     parser.add_argument('--with-knowledge', action='store_true', help='同时将16份演示版本资料上传到本地知识库')
+    parser.add_argument('--username', help='当前产线的专家账号；知识资料仅导入该账号的访问范围')
     args = parser.parse_args()
+    if args.with_knowledge and not args.username:
+        parser.error('--with-knowledge 需要 --username，密码通过隐藏提示输入')
     conn = connect()
     try:
         before = counts(conn)
@@ -67,7 +71,15 @@ def main():
             if present.get(line) != (tenant, plant):
                 raise RuntimeError(f'{line} scope differs from demo fixture; no business data written')
         if args.with_knowledge:
-            requests.get('http://127.0.0.1:8000/health', timeout=10).raise_for_status()
+            login_response = requests.post('http://127.0.0.1:8000/auth/login',
+                json={'username': args.username, 'password': getpass('专家密码: ')}, timeout=15)
+            if not login_response.ok:
+                raise RuntimeError(f'专家登录失败: HTTP {login_response.status_code}')
+            login = login_response.json()
+            ctx = login['user_ctx']
+            if ctx['role'] != '专家':
+                raise RuntimeError('知识导入需要专家账号')
+            headers = {'Authorization': 'Bearer ' + login['access_token']}
         parameters, faults = business_rows()
         with conn.cursor() as cursor:
             added_parameters = insert_missing(cursor, 'device_parameters',
@@ -80,9 +92,10 @@ def main():
         uploaded, added_catalog = 0, 0
         if args.with_knowledge:
             for document in knowledge_documents():
-                ctx = {'tenant_id': document['tenant'], 'plant_id': document['plant'], 'line_id': document['line'],
-                       'role': '专家', 'user_id': 'demo_content_loader'}
-                response = requests.post('http://127.0.0.1:8000/upload-document', data={
+                if (document['tenant'], document['plant'], document['line']) != (
+                    ctx['tenant_id'], ctx['plant_id'], ctx['line_id']):
+                    continue
+                response = requests.post('http://127.0.0.1:8000/upload-document', headers=headers, data={
                     'user_ctx': json.dumps(ctx, ensure_ascii=False), 'title': document['family'],
                     'category': document['category'], 'access_level': document['access'], 'family_name': document['family'],
                     'version': document['version'], 'effective_from': document['start'], 'publish': 'true'},
@@ -97,7 +110,7 @@ def main():
                           document['category'], document['access'])])
                 conn.commit()
                 uploaded += 1
-                print(f"Knowledge {uploaded}/16: {document['line']} {document['version']}; chunks={result['chunks']}; added={result['added_chunks']}", flush=True)
+                print(f"Knowledge {uploaded}: {document['line']} {document['version']}; chunks={result['chunks']}; added={result['added_chunks']}", flush=True)
         after = counts(conn)
         print(json.dumps({'before': before, 'after': after, 'knowledge_documents_processed': uploaded,
             'added_process_catalog': added_catalog}, ensure_ascii=True, indent=2))

@@ -36,7 +36,7 @@ def render_settings(backend_url, post):
     elif section == '运行状态':
         runtime_status(backend_url)
     else:
-        account_info(ctx)
+        account_info(ctx, backend_url, post)
 
 
 def upload_document(url, post, ctx):
@@ -179,12 +179,17 @@ def manage_versions(url, post, ctx):
 
 def runtime_status(url):
     st.subheader('运行状态')
+    if st.session_state.user_ctx['role'] != '专家':
+        st.info('运行状态由专家查看。')
+        return
     st.caption('查看服务连接情况。刷新检查只在此页面执行，不影响文档上传。')
     refresh = st.button('刷新运行状态', type='primary')
     if refresh or 'settings_runtime_status' not in st.session_state:
+        from api_client import auth_headers
+        headers = auth_headers()
         def check(path):
             try:
-                response = requests.get(url + path, timeout=10)
+                response = requests.get(url + path, headers=headers, timeout=10)
                 return response.json() if response.ok else None
             except (requests.RequestException, ValueError):
                 return None
@@ -221,12 +226,12 @@ def runtime_status(url):
                     st.caption(f"已入库片段 {data['documents']} 个")
 
 
-def account_info(ctx):
+def account_info(ctx, url, post):
     st.subheader('账户与权限')
     with st.container(border=True):
         st.markdown('**当前账户**')
         left, right = st.columns(2)
-        left.text(f"用户名：{ctx.get('user_id', 'demo')}\n当前角色：{ctx['role']}")
+        left.text(f"用户名：{st.session_state.get('username', '')}\n当前角色：{ctx['role']}")
         right.text(f"租户：{ctx['tenant_id']}\n工厂：{ctx['plant_id']}\n产线：{ctx['line_id']}")
     st.markdown('**角色权限说明**')
     st.dataframe([
@@ -234,4 +239,54 @@ def account_info(ctx):
         {'角色': '工程师', '业务记录': '查看、新增、修改', '知识文档': '查看权限内资料', '上传 / 发布 / 撤回': '不可操作'},
         {'角色': '专家', '业务记录': '查看、新增、修改', '知识文档': '查看权限内资料', '上传 / 发布 / 撤回': '可以操作'},
     ], hide_index=True, use_container_width=True)
-    st.info('当前登录采用演示模式，尚未接入真实账户管理。此处只展示账户和权限，不提供未落库的“添加用户”操作。')
+    st.caption('账号身份与访问范围由服务端确定。需要分配或调整账号时，请联系本租户专家。')
+    if ctx['role'] != '专家':
+        return
+    if notice := st.session_state.pop('account_notice', None):
+        st.success(notice)
+    from api_client import get_backend
+    response = get_backend(url + '/auth/accounts', timeout=15)
+    scopes_response = get_backend(url + '/auth/scopes', timeout=15)
+    if not response.ok or not scopes_response.ok:
+        st.error(error_message(response if not response.ok else scopes_response))
+        return
+    accounts = response.json()['accounts']
+    scopes = scopes_response.json()['scopes']
+    st.subheader('本租户账号')
+    st.dataframe([{'用户名': row['username'], '角色': row['role'], '工厂': row['plant_id'],
+                   '产线': row['line_id'], '状态': '启用' if row['active'] else '禁用'} for row in accounts],
+                 hide_index=True, use_container_width=True)
+    if scopes:
+        with st.form('create_account', clear_on_submit=True):
+            st.markdown('**分配账号**')
+            username = st.text_input('新账号用户名', help='使用英文字母、数字、下划线、点或短横线')
+            password = st.text_input('初始密码（至少12个字符）', type='password')
+            role = st.selectbox('账号角色', ['操作员', '工程师', '专家'])
+            scope_index = st.selectbox('账号所属工厂与产线', range(len(scopes)),
+                format_func=lambda i: f"{scopes[i]['plant_name']} / {scopes[i]['line_name']}")
+            submitted = st.form_submit_button('创建账号')
+        if submitted:
+            scope = scopes[scope_index]
+            result = post(url + '/auth/accounts', json={'username': username.strip(), 'password': password,
+                'role': role, 'plant_id': scope['plant_id'], 'line_id': scope['line_id']}, timeout=15)
+            if result.ok:
+                st.session_state.account_notice = '账号已创建，请将账号和初始密码交给对应人员。'
+                st.rerun()
+            else:
+                st.error(error_message(result))
+    others = {row['user_id']: row for row in accounts if row['user_id'] != ctx['user_id']}
+    if others:
+        with st.form('update_account', clear_on_submit=True):
+            st.markdown('**管理账号**')
+            user_id = st.selectbox('选择账号', list(others), format_func=lambda uid: others[uid]['username'])
+            action = st.selectbox('操作', ['禁用账号', '启用账号', '重置密码'])
+            password = st.text_input('重置后的密码（仅重置密码时填写）', type='password')
+            submitted = st.form_submit_button('执行账号操作')
+        if submitted:
+            changes = {'password': password} if action == '重置密码' else {'active': action == '启用账号'}
+            result = post(url + '/auth/accounts/' + user_id, json=changes, timeout=15)
+            if result.ok:
+                st.session_state.account_notice = '账号已更新，该账号原有登录已失效。'
+                st.rerun()
+            else:
+                st.error(error_message(result))

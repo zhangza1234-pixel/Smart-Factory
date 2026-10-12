@@ -6,7 +6,8 @@ from datetime import datetime, date
 from uuid import UUID
 
 import pymysql
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Request
+from auth import create_auth
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing import Literal
@@ -48,11 +49,13 @@ DB_CONFIG = {
 }
 
 # 创建 FastAPI 应用
+auth_router, authorize = create_auth(lambda: init_state().engine)
 app = FastAPI(
     title='智能工厂助手后端',
     description='提供知识查询、SQL执行、文档上传和系统状态查询API服务',
-    version='2.0'
+    version='2.0', dependencies=[Depends(authorize)]
 )
+app.include_router(auth_router)
 
 # ----------------------------
 # 2. 数据模型定义 (Pydantic)
@@ -411,14 +414,16 @@ async def health_check():
     return JSONResponse({"status": "ok", "service": "智能工厂知识助手后端"})
 
 @app.get("/db-status")
-def db_status():
+def db_status(request: Request):
     conn = None
     try:
         conn = pymysql.connect(**DB_CONFIG)
         with conn.cursor() as cursor:
-            cursor.execute("SELECT COUNT(*) FROM tenants")
+            cursor.execute("SELECT COUNT(*) FROM tenants WHERE tenant_id=%s", (request.state.user_ctx['tenant_id'],))
             tenants = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM device_parameters")
+            cursor.execute("SELECT COUNT(*) FROM device_parameters d JOIN production_lines l ON d.line_id=l.line_id "
+                           "JOIN plants p ON l.plant_id=p.plant_id WHERE p.tenant_id=%s AND p.plant_id=%s AND l.line_id=%s",
+                           tuple(request.state.user_ctx[k] for k in ('tenant_id', 'plant_id', 'line_id')))
             parameters = cursor.fetchone()[0]
         return {"status": "connected", "tenants": tenants, "parameters": parameters}
     except Exception as e:
@@ -429,10 +434,11 @@ def db_status():
             conn.close()
 
 @app.get("/vector-status")
-def vector_status():
+def vector_status(request: Request):
     try:
         chroma = init_chroma()
-        count = len(chroma.get(include=[])["ids"])
+        from rag import scope_filter
+        count = len(chroma.get(include=[], where=scope_filter(UserContext(**request.state.user_ctx)))["ids"])
         return {"status": "connected", "documents": count}
     except Exception as e:
         logger.error(f"向量库状态检查失败: {e}")

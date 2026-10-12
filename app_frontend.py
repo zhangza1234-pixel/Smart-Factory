@@ -3,7 +3,6 @@
 import streamlit as st
 import requests
 import json
-import time
 import os
 from datetime import date, timedelta
 from uuid import uuid4, UUID
@@ -20,17 +19,7 @@ st.set_page_config(
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
-def post_backend(url, **kwargs):
-    """Let each control show its ordinary failure message if the backend is offline."""
-    try:
-        return requests.post(url, **kwargs)
-    except requests.RequestException:
-        response = requests.Response()
-        response.status_code = 503
-        response.url = url
-        response._content = json.dumps({'detail': '后端服务暂不可用，请检查服务状态。'}, ensure_ascii=False).encode('utf-8')
-        response.encoding = 'utf-8'
-        return response
+from api_client import post_backend, get_backend, clear_identity
 
 # 初始化会话状态
 if 'user_ctx' not in st.session_state:
@@ -165,7 +154,7 @@ def knowledge_assistant():
         with st.chat_message("assistant"):
             with st.spinner("正在处理你的问题..."):
                 try:
-                    response = requests.post(f"{BACKEND_URL}/query",
+                    response = post_backend(f"{BACKEND_URL}/query",
                         json={"question": question.strip(), "user_ctx": st.session_state.user_ctx,
                               "top_k": top_k, 'session_id': st.session_state.conversation_id,
                               'as_of': as_of, 'comparison_dates': comparison_dates}, timeout=600)
@@ -185,41 +174,24 @@ def knowledge_assistant():
 
 def login_page():
     st.title("智能工厂知识助手登录")
-    st.write("请使用您的工厂账户登录")
-
-    with st.form("login_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            tenant_id = st.selectbox("租户", ["tenant_A", "tenant_B", "tenant_C"], index=0)
-            plant_id = st.selectbox("工厂", ["plant_A1", "plant_A2", "plant_B1", "plant_C1"], index=0)
-        with col2:
-            role = st.selectbox("角色", ["操作员", "工程师", "专家"], index=1)
-            # 确保line_id使用小写
-            line_id = st.selectbox("产线", ["line_a1", "line_a2", "line_b1", "line_c1"], index=0)
-
-        username = st.text_input("用户名", value="engineer_li")
-        password = st.text_input("密码", type="password", value="securepass123")
-
+    st.write("请使用专家分配的账号登录，身份和访问范围由账号决定。")
+    with st.form("login_form", clear_on_submit=True):
+        username = st.text_input("用户名")
+        password = st.text_input("密码", type="password")
         submitted = st.form_submit_button("登录")
-        if submitted:
-            if username and password:
-                st.session_state.user_ctx = {
-                    "tenant_id": tenant_id,
-                    "plant_id": plant_id,
-                    "role": role,
-                    "line_id": line_id,
-                    "user_id": username.strip()
-                }
-                st.session_state.chat_history = []
-                st.session_state.conversation_id = str(uuid4())
-                st.success("登录成功！正在跳转主界面...")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.error("用户名和密码不能为空")
-
-
-
+    if submitted:
+        response = post_backend(f"{BACKEND_URL}/auth/login",
+            json={'username': username.strip(), 'password': password}, timeout=15)
+        if response.ok:
+            result = response.json()
+            clear_identity()
+            st.session_state.access_token = result['access_token']
+            st.session_state.user_ctx = result['user_ctx']
+            st.session_state.username = result['username']
+            st.rerun()
+        else:
+            from settings_ui import error_message
+            st.error(error_message(response))
 
 
 # 设备参数页面
@@ -247,7 +219,7 @@ def process_documents():
     # 文档列表
     with st.spinner("加载文档中..."):
         try:
-            response = requests.post(
+            response = post_backend(
                 f"{BACKEND_URL}/documents/list",
                 json={"user_ctx": st.session_state.user_ctx}, timeout=15
             )
@@ -300,12 +272,19 @@ def main_page():
 
     # 租户信息显示
     st.sidebar.subheader(f"当前用户")
-    st.sidebar.markdown(f"**用户**: {st.session_state.user_ctx.get('user_id', 'demo')}")
+    st.sidebar.markdown(f"**用户**: {st.session_state.get('username', '')}")
     st.sidebar.markdown(f"**租户**: {st.session_state.user_ctx['tenant_id']}")
     st.sidebar.markdown(f"**工厂**: {st.session_state.user_ctx['plant_id']}")
     st.sidebar.markdown(f"**产线**: {st.session_state.user_ctx['line_id']}")
     st.sidebar.markdown(f"**角色**: {st.session_state.user_ctx['role']}")
 
+    if st.sidebar.button("退出登录"):
+        response = post_backend(f"{BACKEND_URL}/auth/logout", timeout=15)
+        if response.ok:
+            clear_identity()
+            st.rerun()
+        else:
+            st.sidebar.error('退出失败，请重试。')
     st.sidebar.divider()
     st.sidebar.markdown("### 快捷操作")
     if st.sidebar.button("清除聊天记录"):
@@ -332,6 +311,11 @@ def main_page():
 
 # 应用路由
 if 'user_ctx' in st.session_state and st.session_state.user_ctx:
-    main_page()
+    response = get_backend(f"{BACKEND_URL}/auth/me", timeout=15)
+    if response.ok:
+        st.session_state.user_ctx = response.json()['user_ctx']
+        main_page()
+    else:
+        st.error('无法验证登录状态，请稍后重试。')
 else:
     login_page()

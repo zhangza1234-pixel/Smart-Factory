@@ -32,6 +32,9 @@ class FakeStore:
 
 class APITests(unittest.TestCase):
     def setUp(self):
+        # These tests exercise endpoint logic; test_auth covers the real identity boundary.
+        mains.app.dependency_overrides[mains.authorize] = lambda: None
+        self.addCleanup(mains.app.dependency_overrides.pop, mains.authorize)
         self.client = TestClient(mains.app)
         engine = create_engine('sqlite://', poolclass=StaticPool, connect_args={'check_same_thread': False})
         self.state = StateStore(engine, redis_url='')

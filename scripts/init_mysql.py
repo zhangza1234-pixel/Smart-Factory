@@ -42,6 +42,7 @@ def main():
             connection.select_db(database)
         run_sql(connection, ROOT / "database" / "01_schema.sql")
         run_sql(connection, ROOT / "database" / "03_rag_state.sql")
+        run_sql(connection, ROOT / "database" / "04_auth.sql")
         if args.seed:
             run_sql(connection, ROOT / "database" / "02_demo.sql")
         if user != args.admin_user:
@@ -50,7 +51,7 @@ def main():
                 cursor.execute(f"GRANT SELECT ON `{database}`.* TO %s@%s", (user, "%"))
                 for table in ('device_parameters', 'fault_knowledge'):
                     cursor.execute(f"GRANT INSERT, UPDATE ON `{database}`.`{table}` TO %s@%s", (user, "%"))
-                for table in ('rag_document_families', 'rag_document_versions', 'rag_sessions', 'rag_messages', 'rag_user_memories'):
+                for table in ('rag_document_families', 'rag_document_versions', 'rag_sessions', 'rag_messages', 'rag_user_memories', 'auth_users', 'auth_sessions'):
                     cursor.execute(f"GRANT INSERT, UPDATE, DELETE ON `{database}`.`{table}` TO %s@%s", (user, "%"))
         print(f"数据库 {database} 已就绪；应用账户 {user}。已有账户的密码和权限不会被重置。")
     finally:

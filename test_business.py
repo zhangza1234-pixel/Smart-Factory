@@ -14,6 +14,9 @@ FAULT = {'device_type': '测试设备', 'code': 'T01', 'description': '报警', 
 
 class BusinessTests(unittest.TestCase):
     def setUp(self):
+        # Business semantics are isolated here; authenticated access is covered in test_auth.
+        mains.app.dependency_overrides[mains.authorize] = lambda: None
+        self.addCleanup(mains.app.dependency_overrides.pop, mains.authorize)
         self.engine = create_engine('sqlite://', poolclass=StaticPool, connect_args={'check_same_thread': False})
         with self.engine.begin() as conn:
             for sql in [

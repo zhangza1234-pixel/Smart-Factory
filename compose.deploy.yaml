@@ -25,6 +25,7 @@ services:
       - ./data/mysql:/var/lib/mysql
       - ./database/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./database/03_rag_state.sql:/docker-entrypoint-initdb.d/03_rag_state.sql:ro
+      - ./database/04_auth.sql:/docker-entrypoint-initdb.d/04_auth.sql:ro
     healthcheck:
       test: ["CMD-SHELL", 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u "$$MYSQL_USER" -D "$$MYSQL_DATABASE" -e "SELECT 1" >/dev/null']
       interval: 10s
