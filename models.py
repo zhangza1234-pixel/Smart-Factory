@@ -5,7 +5,7 @@
 
 # 阿里的通义千问大模型
 #    官网: https://bailian.console.aliyun.com/#/home
-ALI_TONGYI_API_KEY_OS_VAR_NAME = "sk-a961eb668d254d9798a8e3fc9d90c06b"
+ALI_TONGYI_API_KEY_OS_VAR_NAME = "DASHSCOPE_API_KEY"
 ALI_TONGYI_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 ALI_TONGYI_MAX_MODEL = "qwen-max-latest"
 ALI_TONGYI_TURBO_MODEL = "qwen-turbo-latest"
@@ -46,7 +46,7 @@ from langchain_community.embeddings import DashScopeEmbeddings, HunyuanEmbedding
 
 
 # 使用原生api获得指定平台的客户端 (默认是：阿里通义千问)
-def get_normal_client(api_key=os.getenv(ALI_TONGYI_API_KEY_OS_VAR_NAME),
+def get_normal_client(api_key=None,
                       base_url=ALI_TONGYI_URL,
                       verbose=False, debug=False):
     """
@@ -58,13 +58,13 @@ def get_normal_client(api_key=os.getenv(ALI_TONGYI_API_KEY_OS_VAR_NAME),
     if (verbose):
         print(f"{function_name}-平台：{base_url}")
     if (debug):
-        print(f"{function_name}-平台：{base_url},key：{api_key}")
-    return OpenAI(api_key=api_key, base_url=base_url)
+        print(f"{function_name}-平台：{base_url}")
+    return OpenAI(api_key=api_key or (os.getenv(ALI_TONGYI_API_KEY_OS_VAR_NAME) if base_url == ALI_TONGYI_URL else None), base_url=base_url)
 
 
 
 # 通过LangChain获得指定平台和模型的客户端 (默认是：阿里通义千问)
-def get_lc_model_client(api_key=os.getenv(ALI_TONGYI_API_KEY_OS_VAR_NAME),
+def get_lc_model_client(api_key=None,
                         base_url=ALI_TONGYI_URL,
                         model=ALI_TONGYI_MAX_MODEL,
                         temperature=0.7, verbose=False, debug=False):
@@ -77,8 +77,8 @@ def get_lc_model_client(api_key=os.getenv(ALI_TONGYI_API_KEY_OS_VAR_NAME),
     if (verbose):
         print(f"{function_name}-平台：{base_url},模型：{model},温度：{temperature}")
     if (debug):
-        print(f"{function_name}-平台：{base_url},模型：{model},温度：{temperature},key：{api_key}")
-    return ChatOpenAI(api_key=api_key,
+        print(f"{function_name}-平台：{base_url},模型：{model},温度：{temperature}")
+    return ChatOpenAI(api_key=api_key or (os.getenv(ALI_TONGYI_API_KEY_OS_VAR_NAME) if base_url == ALI_TONGYI_URL else None),
                       base_url=base_url,
                       model=model,
                       temperature=temperature,
@@ -109,10 +109,10 @@ def get_ds_model_client(model=DEEPSEEK_CHAT_MODEL,
 
 
 # 通过LangChain获得一个阿里通义千问嵌入模型的实例
-def get_ali_embeddings(model=ALI_TONGYI_EMBEDDING_V4):
+def get_ali_embeddings(model=None):
     """通过LangChain获得一个阿里通义千问嵌入模型的实例"""
     return DashScopeEmbeddings(
-        model=model,
+        model=model or os.getenv("EMBEDDING_MODEL", ALI_TONGYI_EMBEDDING_V3),
         dashscope_api_key=os.getenv(ALI_TONGYI_API_KEY_OS_VAR_NAME)
     )
 

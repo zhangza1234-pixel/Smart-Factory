@@ -4,6 +4,8 @@ import streamlit as st
 import requests
 import json
 import time
+from datetime import date, timedelta
+from uuid import uuid4, UUID
 from streamlit_option_menu import option_menu
 
 # 页面设置
@@ -16,6 +18,19 @@ st.set_page_config(
 # 后端API配置
 BACKEND_URL = "http://127.0.0.1:8000"
 
+
+def post_backend(url, **kwargs):
+    """Let each control show its ordinary failure message if the backend is offline."""
+    try:
+        return requests.post(url, **kwargs)
+    except requests.RequestException:
+        response = requests.Response()
+        response.status_code = 503
+        response.url = url
+        response._content = json.dumps({'detail': '后端服务暂不可用，请检查服务状态。'}, ensure_ascii=False).encode('utf-8')
+        response.encoding = 'utf-8'
+        return response
+
 # 初始化会话状态
 if 'user_ctx' not in st.session_state:
     st.session_state.user_ctx = None
@@ -23,148 +38,148 @@ if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'selected_tab' not in st.session_state:
     st.session_state.selected_tab = "知识助手"
+if 'conversation_id' not in st.session_state:
+    st.session_state.conversation_id = str(uuid4())
+
+
+def render_sources(message):
+    sources = message.get("sources", [])
+    if sources:
+        with st.expander(f"查看引用原文（{len(sources)} 个片段）"):
+            for source in sources:
+                metadata = source["metadata"]
+                page = metadata.get("page", 0)
+                location = f" · 第 {page} 页" if page else ""
+                st.markdown(f"**[{source['citation']}] {metadata.get('title', '未命名文档')}**{location}")
+                if metadata.get('doc_type') in ('fault', 'equipment'):
+                    st.caption('来源：MySQL 故障库（当前租户共享）' if metadata['doc_type'] == 'fault' else '来源：MySQL 设备参数')
+                    st.caption(f"数据：当前数据库快照 · 查询日期：{source.get('as_of', '当前')}")
+                else:
+                    st.caption(f"文件：{metadata.get('filename', '未知')} · 分类：{metadata.get('category', '未分类')}")
+                    st.caption(f"版本：{metadata.get('version', '未登记')} · 查询日期：{source.get('as_of', '当前')} · 生效：{metadata.get('effective_from', '未知')}")
+                if metadata.get('section_path'):
+                    st.caption(f"章节：{metadata['section_path']}")
+                if metadata.get('doc_type') == 'fault':
+                    fault = json.loads(source['text'])
+                    st.caption(f"设备：{fault['device_type']} · 故障代码：{fault['code']} · 严重程度：{fault['severity']}")
+                    st.markdown('**故障现象**')
+                    st.text(fault['description'])
+                    st.markdown('**处理步骤与注意事项**')
+                    st.text(fault['solution'])
+                else:
+                    st.text(source["text"])
+    diagnostics = message.get("diagnostics", {})
+    confidence = message.get('confidence', {})
+    if confidence:
+        st.caption(f"证据判断：{confidence.get('label', '无法判断')}（规则及模型核验，不代表正确概率）")
+        for reason in confidence.get('reasons', []):
+            st.caption(reason)
+    steps = message.get('retrieval_steps', [])
+    if steps:
+        with st.expander('查看多跳检索过程'):
+            for step in steps:
+                st.write(f"{step['as_of']} · 第 {step['step']} 步：{step['query']}")
+                st.caption(f"前置步骤：{step['depends_on']} · 证据数：{step['source_count']} · {step['missing'] or '完成'}")
+                tools = {'faults': 'SQL 故障库', 'equipment': 'SQL 设备参数', 'documents': '文档知识库'}
+                st.caption('查询工具：' + tools.get(step['tool'], step['tool']) +
+                    ('；SQL 无匹配后补查文档知识库' if step.get('fallback_tool') == 'documents' else ''))
+    if diagnostics.get('route') in ('chat', 'history'):
+        st.caption('对话回顾：读取当前会话，未检索知识库。' if diagnostics['route'] == 'history' else '日常对话，未检索知识库。')
+    elif 'retrieval_ms' in diagnostics:
+        st.caption(f"召回候选 {diagnostics.get('candidates', 0)} 个 · 检索 {diagnostics.get('retrieval_ms', 0)} ms · 总耗时 {diagnostics.get('total_ms', 0)} ms")
 
 
 def knowledge_assistant():
     st.header("🏭 智能工厂知识助手")
-
-    # 显示用户上下文
-    with st.expander("当前用户上下文"):
-        st.markdown(f"**租户**: {st.session_state.user_ctx['tenant_id']}")
-        st.markdown(f"**工厂**: {st.session_state.user_ctx['plant_id']}")
-        st.markdown(f"**产线**: {st.session_state.user_ctx['line_id']}")
-        st.markdown(f"**角色**: {st.session_state.user_ctx['role']}")
-        try:
-            # 直接查询租户表
-            response = requests.post(
-                f"{BACKEND_URL}/execute-sql",
-                json={
-                    "sql": f"SELECT industry FROM tenants WHERE tenant_id = '{st.session_state.user_ctx['tenant_id']}'",
-                    "user_ctx": st.session_state.user_ctx
-                }
-            )
-            industry = response.json()[0]['industry'] if response.json() else "未知"
-            st.markdown(f"**行业**: {industry}")
-        except:
-            st.markdown("**行业**: 查询失败")
-    # 聊天历史显示
-    chat_container = st.container(height=500)
-    with chat_container:
-        for idx, msg in enumerate(st.session_state.chat_history):
-            if msg["role"] == "user":
-                with st.chat_message("user", avatar="🧑‍🔧"):
-                    st.markdown(msg["content"])
-            else:
-                with st.chat_message("assistant", avatar="🤖"):
-                    # 添加来源标识
-                    source_type = "技术文档" if any(
-                        s.get('tool') == 'chroma_search' for s in msg.get("source_data", [])) else "结构化数据"
-                    st.caption(f"来源: {source_type}")
-                    st.markdown(msg["content"])
-                    # 更健壮的空值检查
-                    if msg.get("source_data"):
-                        with st.expander("查看来源数据"):
-                            for source in msg["source_data"]:
-                                # 确保 source 是字典类型
-                                if not isinstance(source, dict):
-                                    st.error(f"无效的来源数据格式: {type(source)}")
-                                    continue
-
-                                # 安全获取工具名称
-                                tool_name = source.get('tool', '未知工具')
-                                st.markdown(f"**工具**: {tool_name}")
-
-                                # 安全显示查询语句
-                                query = source.get('query')
-                                if query:
-                                    st.code(query, language="sql")
-                                else:
-                                    st.warning("无查询语句")
-
-                                # 安全显示结果
-                                result = source.get('result')
-                                if result:
-                                    try:
-                                        # 尝试解析为JSON
-                                        result_data = json.loads(result)
-                                        st.json(result_data)
-                                    except:
-                                        # 如果不是JSON，直接显示文本
-                                        st.text(result)
-                                else:
-                                    st.warning("无结果数据")
-
-    # 用户输入
-    user_input = st.chat_input("请输入您的问题...")
-
-    if user_input:
-        cleaned_input = user_input.strip()
-        cleaned_input = cleaned_input.replace("'", "")
-        # 添加用户消息到历史
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-
-        # 显示用户消息
-        with chat_container:
-            with st.chat_message("user", avatar="🧑‍🔧"):
-                st.markdown(user_input)
-
-        # 调用后端API
-        with st.spinner("正在思考..."):
+    st.caption("支持技术文档、操作规范和故障代码查询，回答附带可查看的原文引用。")
+    with st.expander("检索设置"):
+        top_k = st.slider("最多引用片段数", min_value=1, max_value=10, value=5)
+        time_mode = st.radio('标准适用时间', ['自动识别（默认现行）', '指定日期', '对比两个日期'], horizontal=True)
+        as_of, comparison_dates = None, None
+        if time_mode == '指定日期':
+            as_of = st.date_input('适用日期', value=date.today()).isoformat()
+        elif time_mode == '对比两个日期':
+            first = st.date_input('对比日期一', value=date(date.today().year - 1, 12, 31))
+            second = st.date_input('对比日期二', value=date.today())
+            comparison_dates = [first.isoformat(), second.isoformat()]
+        st.caption('只写年份时，往年按当年12月31日查询；今年按今天查询。更精确的适用范围请指定日期。')
+    with st.expander('会话与长期记忆'):
+        st.caption(f"当前会话 ID：{st.session_state.conversation_id}")
+        restore_id = st.text_input('恢复会话 ID', placeholder='输入此前保存的会话 ID')
+        if st.button('恢复会话'):
             try:
-                response = requests.post(
-                    f"{BACKEND_URL}/query",
-                    json={
-                        "question": cleaned_input,
-                        "user_ctx": st.session_state.user_ctx
-                    }
-                )
-
-                if response.status_code == 200:
-                    result = response.json()
-
-                    # 添加助手回复到历史
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": result["answer"],
-                        "source_data": result.get("source_data", [])  # 修改为 source_data
-                    })
-
-                    # 显示助手回复
-                    with chat_container:
-                        with st.chat_message("assistant", avatar="🤖"):
-                            st.markdown(result["answer"])
-                            if "source_data" in result:
-                                with st.expander("查看来源数据"):
-                                    for source in result["source_data"]:
-                                        st.markdown(f"**工具**: {source['tool']}")
-                                        st.code(source['query'], language="sql")
-                                        st.json(source['result'])
+                sid = str(UUID(restore_id))
+                response = post_backend(f'{BACKEND_URL}/sessions/{sid}/history',
+                    json={'user_ctx': st.session_state.user_ctx}, timeout=15)
+                response.raise_for_status()
+                history = response.json()
+                st.session_state.conversation_id = sid
+                st.session_state.chat_history = [{'role': item['role'], 'content': item['content']}
+                    for item in history['messages']]
+                if history['summary']:
+                    st.session_state.chat_history.insert(0, {'role': 'assistant',
+                        'content': '较早对话摘要（仅用于理解上下文，技术结论需重新核对）：\n' +
+                        json.dumps(history['summary'], ensure_ascii=False)})
+                st.rerun()
+            except (ValueError, requests.RequestException):
+                st.error('无法恢复会话，请检查 ID、当前用户和服务状态。')
+        memory_kind = st.selectbox('记忆类型', ['回答偏好', '用户背景', '审核经验'])
+        memory_content = st.text_area('明确保存的长期记忆', max_chars=1000,
+            help='不会自动把模型回答存成知识。审核经验只允许专家登记，仍需有效文档支持技术结论。')
+        memory_source = st.text_input('关联文档版本 ID（选填）', max_chars=64,
+            help='可从文档版本目录复制；关联版本失效后，该记忆不会注入新问答。')
+        memory_expiry = st.date_input('记忆失效日期', value=date.today() + timedelta(days=365)) if st.checkbox('设置记忆有效期') else None
+        if st.button('保存长期记忆'):
+            if not memory_content.strip():
+                st.warning('请先填写记忆内容。')
+            else:
+                response = post_backend(f'{BACKEND_URL}/memories', json={'user_ctx': st.session_state.user_ctx,
+                    'kind': {'回答偏好': 'preference', '用户背景': 'background', '审核经验': 'reviewed_experience'}[memory_kind],
+                    'content': memory_content, 'source_id': memory_source.strip(),
+                    'valid_until': memory_expiry.isoformat() if memory_expiry else None}, timeout=15)
+                if response.ok:
+                    st.success('记忆已保存，仅用于当前用户和范围。')
                 else:
-                    # st.error(f"请求失败: {response.text}")
-                    # 更健壮的错误处理
-                    try:
-                        error_detail = response.json().get('detail', response.text)
-                    except:
-                        error_detail = response.text[:500]  # 限制长度防止显示问题
-
-                    # 更友好的错误提示
-                    error_msg = f"请求失败: {error_detail}"
-                    st.error(error_msg)
-
-                    # 添加到聊天历史
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": f"抱歉，处理您的请求时出错: {error_msg}"
-                    })
-            except Exception as e:
-                st.error(f"发生错误: {str(e)}")
-                st.session_state.chat_history.append({
-                    "role": "assistant",
-                    "content": f"抱歉，处理您的请求时出错: {str(e)}"
-                })
-
-
-
+                    st.error('保存失败，请检查权限和记忆数量。')
+        if st.button('查看已保存记忆'):
+            response = post_backend(f'{BACKEND_URL}/memories/list',
+                json={'user_ctx': st.session_state.user_ctx}, timeout=15)
+            if response.ok:
+                st.json(response.json()['memories'])
+        delete_id = st.text_input('需要删除的记忆 ID')
+        if st.button('删除指定记忆') and delete_id:
+            response = post_backend(f'{BACKEND_URL}/memories/{delete_id}/delete',
+                json={'user_ctx': st.session_state.user_ctx}, timeout=15)
+            st.success('记忆已删除') if response.ok else st.error('删除失败，请检查记忆 ID。')
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if message["role"] == "assistant":
+                render_sources(message)
+    question = st.chat_input("例如：F0012 故障应该如何排查？")
+    if question and question.strip():
+        st.session_state.chat_history.append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
+        with st.chat_message("assistant"):
+            with st.spinner("正在处理你的问题..."):
+                try:
+                    response = requests.post(f"{BACKEND_URL}/query",
+                        json={"question": question.strip(), "user_ctx": st.session_state.user_ctx,
+                              "top_k": top_k, 'session_id': st.session_state.conversation_id,
+                              'as_of': as_of, 'comparison_dates': comparison_dates}, timeout=600)
+                    response.raise_for_status()
+                    result = response.json()
+                    message = {"role": "assistant", "content": result["answer"],
+                               "sources": result.get("sources", []),
+                               "diagnostics": result.get("diagnostics", {}),
+                               'confidence': result.get('confidence', {}),
+                               'retrieval_steps': result.get('retrieval_steps', [])}
+                    st.session_state.chat_history.append(message)
+                    st.markdown(message["content"])
+                    render_sources(message)
+                except requests.RequestException:
+                    st.error("知识服务暂不可用，请检查后端状态和模型配置后重试。")
 
 
 def login_page():
@@ -191,9 +206,11 @@ def login_page():
                     "tenant_id": tenant_id,
                     "plant_id": plant_id,
                     "role": role,
-                    "line_id": line_id
+                    "line_id": line_id,
+                    "user_id": username.strip()
                 }
                 st.session_state.chat_history = []
+                st.session_state.conversation_id = str(uuid4())
                 st.success("登录成功！正在跳转主界面...")
                 time.sleep(1)
                 st.rerun()
@@ -207,125 +224,19 @@ def login_page():
 # 设备参数页面
 # app_frontend.py
 def equipment_parameters():
-    st.header("设备参数管理")
-    st.info("查询当前产线的设备信息")
-
-    # 显示当前产线
-    st.markdown(f"**当前产线**: {st.session_state.user_ctx['line_id']}")
-
-    # 设备查询表单
-    with st.form("equipment_form"):
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            device_name = st.text_input("设备名称", placeholder="输入设备名称或留空查询所有设备")
-        with col2:
-            st.text("")
-            st.text("")
-            submit = st.form_submit_button("查询")
-
-    if submit:
-        with st.spinner("查询中..."):
-            try:
-                # 正确的请求格式
-                request_data = {
-                    "device_name": device_name,
-                    "user_ctx": st.session_state.user_ctx
-                }
-
-                # 显示发送的请求
-                st.json(request_data)
-                # 调用后端API
-                response = requests.post(
-                    f"{BACKEND_URL}/query-equipment",
-                    json={
-                        "device_name": device_name,
-                        "user_ctx": st.session_state.user_ctx
-                    }
-                )
-
-                if response.status_code == 200:
-                    results = response.json()
-
-                    if results:
-                        if device_name:
-                            # 显示设备详细信息
-                            st.subheader(f"设备: {device_name} 的参数")
-                            st.dataframe(results)
-                        else:
-                            # 显示所有设备列表
-                            st.subheader("当前产线所有设备")
-                            devices = [d['device'] for d in results]
-                            st.write(", ".join(devices))
-                    else:
-                        st.warning("未找到匹配的设备信息")
-                else:
-                    st.error(f"查询失败: {response.text}")
-            except Exception as e:
-                st.error(f"发生错误: {str(e)}")
+    from business_ui import render_business
+    render_business('equipment', BACKEND_URL, post_backend)
 
 
-# 故障库页面
 def fault_library():
-    st.header("故障知识库")
-    st.info("查询设备故障信息及解决方案")
-
-    # 查询故障
-    with st.form("fault_query_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            device_type = st.text_input("设备类型", placeholder="如: 激光焊接机")
-        with col2:
-            fault_code = st.text_input("故障代码", placeholder="如: F0012")
-
-        submit = st.form_submit_button("查询故障解决方案")
-
-    if submit:
-        with st.spinner("查询中..."):
-            try:
-                # 构造SQL查询
-                sql = f"""
-                SELECT device_type, code, description, solution, severity 
-                FROM fault_knowledge 
-                WHERE tenant_id = '{st.session_state.user_ctx['tenant_id']}'
-                """
-
-                if device_type:
-                    sql += f" AND device_type LIKE '%{device_type}%'"
-                if fault_code:
-                    sql += f" AND code LIKE '%{fault_code}%'"
-
-                # 调用后端执行SQL
-                response = requests.post(
-                    f"{BACKEND_URL}/execute-sql",
-                    json={
-                        "sql": sql,
-                        "user_ctx": st.session_state.user_ctx
-                    }
-                )
-
-                if response.status_code == 200:
-                    results = response.json()
-
-                    # 显示结果
-                    if results:
-                        st.success(f"找到 {len(results)} 条故障记录")
-                        for fault in results:
-                            with st.expander(f"{fault['device_type']} - {fault['code']}: {fault['description']}"):
-                                st.markdown(f"**严重程度**: {fault['severity']}")
-                                st.markdown("**解决方案**:")
-                                st.markdown(fault['solution'])
-                    else:
-                        st.info("未找到匹配的故障信息")
-                else:
-                    st.error(f"查询失败: {response.text}")
-            except Exception as e:
-                st.error(f"发生错误: {str(e)}")
+    from business_ui import render_business
+    render_business('faults', BACKEND_URL, post_backend)
 
 
 # 工艺文档页面
 def process_documents():
     st.header("工艺文档库")
-    st.info("浏览和下载工艺文档")
+    st.info("浏览当前范围内有效的已发布知识文档；原文可在知识助手的引用中查看。")
     # 添加搜索框
     search_query = st.text_input("搜索文档标题", "")
     # 文档分类选项
@@ -335,55 +246,25 @@ def process_documents():
     # 文档列表
     with st.spinner("加载文档中..."):
         try:
-            # 构造SQL查询
-            sql = f"""
-            SELECT doc_id, title, category, access_level 
-            FROM process_documents 
-            WHERE line_id = '{st.session_state.user_ctx['line_id']}'
-            """
-
-            if selected_category != "全部":
-                sql += f" AND category = '{selected_category}'"
-            if search_query:
-                sql += f" AND title LIKE '%{search_query}%'"
-            # 调用后端执行SQL
             response = requests.post(
-                f"{BACKEND_URL}/execute-sql",
-                json={
-                    "sql": sql,
-                    "user_ctx": st.session_state.user_ctx
-                }
+                f"{BACKEND_URL}/documents/list",
+                json={"user_ctx": st.session_state.user_ctx}, timeout=15
             )
 
             if response.status_code == 200:
-                documents = response.json()
+                catalog = response.json()
+                documents = [doc for doc in catalog['documents'] if doc['id'] in catalog['current_ids']
+                    and (selected_category == '全部' or doc.get('category') == selected_category)
+                    and search_query.lower() in doc['title'].lower()]
 
                 if documents:
                     st.success(f"找到 {len(documents)} 份文档")
                     # 显示文档列表
                     for doc in documents:
-                        # 检查用户权限
-                        role_level = {"操作员": 1, "工程师": 2, "专家": 3}
-                        doc_level = {"操作员": 1, "工程师": 2, "专家": 3}
-
-                        if doc_level[doc["access_level"]] <= role_level[st.session_state.user_ctx["role"]]:
-                            with st.expander(f"{doc['title']} ({doc['category']})"):
-                                st.markdown(f"**文档ID**: {doc['doc_id']}")
-                                st.markdown(f"**访问级别**: {doc['access_level']}")
-
-                                # 模拟文档预览
-                                st.markdown("**文档预览**:")
-                                st.markdown("> 这是一份关于生产工艺的标准文档，包含详细的操作步骤和质量要求...")
-
-                                # 下载按钮
-                                st.download_button(
-                                    label="下载文档",
-                                    data="这是文档内容...",
-                                    file_name=f"{doc['doc_id']}.pdf",
-                                    mime="application/pdf"
-                                )
-                        else:
-                            st.warning(f"文档 '{doc['title']}' 需要 {doc['access_level']} 权限访问")
+                        with st.expander(f"{doc['title']} · {doc['version']}"):
+                            st.markdown(f"**文档ID**: {doc['id']}")
+                            st.markdown(f"**访问级别**: {doc['access_level']}")
+                            st.caption(f"系列：{doc['family_name']} · 生效：{doc['effective_from']} · 文件：{doc['filename']}")
                 else:
                     st.info("当前产线没有可用的工艺文档")
             else:
@@ -394,115 +275,15 @@ def process_documents():
 
 # 系统设置页面
 def system_settings():
-    st.header("系统设置")
+    from settings_ui import render_settings
+    with st.container(key='settings_workspace'):
+        render_settings(BACKEND_URL, post_backend)
 
-    tab1, tab2,tab3 = st.tabs(["用户管理", "系统状态", "知识库管理"])
 
-    with tab1:
-        if st.session_state.user_ctx["role"] == "专家":
-            st.subheader("用户管理")
-            st.write("专家用户可以管理系统用户")
+def sync_navigation(key):
+    st.session_state.selected_tab = st.session_state[key]
 
-            # 添加用户表单
-            with st.form("add_user_form"):
-                st.write("### 添加新用户")
-                new_username = st.text_input("用户名")
-                new_password = st.text_input("密码", type="password")
-                new_role = st.selectbox("角色", ["操作员", "工程师"])
-                new_tenant = st.selectbox("租户", ["tenant_A", "tenant_B"])
-                new_plant = st.selectbox("工厂", ["plant_A1", "plant_A2", "plant_B1"])
-                new_line = st.selectbox("产线", ["line_A1", "line_A2", "line_B1"])
 
-                if st.form_submit_button("添加用户"):
-                    st.success(f"用户 {new_username} 添加成功！")
-        else:
-            st.warning("只有专家用户可以访问此功能")
-
-    with tab2:
-        st.subheader("系统状态")
-        st.info("检查系统各组件运行状态")
-
-        # 后端服务状态
-        try:
-            response = requests.get(f"{BACKEND_URL}/health")
-            if response.status_code == 200:
-                st.success("后端服务: 运行正常")
-            else:
-                st.error(f"后端服务: 异常 ({response.status_code})")
-        except:
-            st.error("后端服务: 不可达")
-
-        # 数据库状态
-        try:
-            response = requests.get(f"{BACKEND_URL}/db-status")
-            if response.status_code == 200:
-                status = response.json()
-                st.success(f"MySQL数据库: 连接正常 (租户数: {status['tenants']}, 设备参数: {status['parameters']})")
-            else:
-                st.error(f" MySQL数据库: 连接异常 ({response.status_code})")
-        except:
-            st.error("MySQL数据库: 不可达")
-
-        # 向量数据库状态
-        try:
-            response = requests.get(f"{BACKEND_URL}/vector-status")
-            if response.status_code == 200:
-                status = response.json()
-                st.success(f" 向量数据库: {status['status']} (文档数: {status['documents']})")
-            else:
-                st.error(f" 向量数据库: 连接异常 ({response.status_code})")
-        except:
-            st.error("❌ 向量数据库: 不可达")
-    with tab3:
-        st.subheader("知识库文档上传")
-        st.info("上传技术文档到向量知识库（支持PDF、TXT、DOCX等格式）")
-
-        if st.session_state.user_ctx["role"] != "专家":
-            st.warning("只有专家用户可以上传文档")
-            return
-
-        uploaded_file = st.file_uploader(
-            "选择技术文档",
-            type=["pdf", "txt", "docx"],
-            accept_multiple_files=False
-        )
-
-        doc_title = st.text_input("文档标题", "")
-        doc_category = st.selectbox("文档分类", ["标准", "图纸", "配方", "故障手册", "操作指南"])
-        access_level = st.selectbox("访问权限", ["操作员", "工程师", "专家"])
-
-        if st.button("上传到知识库") and uploaded_file:
-            with st.spinner("处理文档中..."):
-                try:
-                    # 准备上传数据
-                    files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
-                    metadata = {
-                        "title": doc_title,
-                        "category": doc_category,
-                        "access_level": access_level,
-                        "user_ctx": json.dumps(st.session_state.user_ctx)
-                    }
-
-                    # 调用后端API
-                    response = requests.post(
-                        f"{BACKEND_URL}/upload-document",
-                        files=files,
-                        data=metadata
-                    )
-
-                    if response.status_code == 200:
-                        st.success("文档上传成功！")
-                        st.json(response.json())
-                    else:
-                        # 更详细的错误信息
-                        try:
-                            error_detail = response.json().get('detail', response.text)
-                        except:
-                            error_detail = response.text[:500]
-
-                        st.error(f"上传失败: {error_detail}")
-                except Exception as e:
-                    st.error(f"上传错误: {str(e)}")
 def main_page():
     # 顶部导航栏
     with st.container():
@@ -511,12 +292,14 @@ def main_page():
             options=["知识助手", "设备参数", "故障库", "工艺文档", "系统设置"],
             icons=["chat", "cpu", "bug", "file-earmark-text", "gear"],
             orientation="horizontal",
-            default_index=0,
-            key="top_nav"
+            default_index=["知识助手", "设备参数", "故障库", "工艺文档", "系统设置"].index(st.session_state.selected_tab),
+            key="top_nav",
+            on_change=sync_navigation
         )
 
     # 租户信息显示
     st.sidebar.subheader(f"当前用户")
+    st.sidebar.markdown(f"**用户**: {st.session_state.user_ctx.get('user_id', 'demo')}")
     st.sidebar.markdown(f"**租户**: {st.session_state.user_ctx['tenant_id']}")
     st.sidebar.markdown(f"**工厂**: {st.session_state.user_ctx['plant_id']}")
     st.sidebar.markdown(f"**产线**: {st.session_state.user_ctx['line_id']}")
@@ -525,8 +308,14 @@ def main_page():
     st.sidebar.divider()
     st.sidebar.markdown("### 快捷操作")
     if st.sidebar.button("清除聊天记录"):
-        st.session_state.chat_history = []
-        st.rerun()
+        response = post_backend(f"{BACKEND_URL}/sessions/{st.session_state.conversation_id}/clear",
+            json={'user_ctx': st.session_state.user_ctx}, timeout=15)
+        if response.ok or response.status_code == 404:
+            st.session_state.chat_history = []
+            st.session_state.conversation_id = str(uuid4())
+            st.rerun()
+        else:
+            st.sidebar.error('清除失败，请等待当前回答完成后重试。')
 
     # 功能区域
     if st.session_state.selected_tab == "知识助手":

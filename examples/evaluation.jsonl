@@ -1,0 +1,4 @@
+{"question":"F0012故障如何排查？","user_ctx":{"tenant_id":"tenant_A","plant_id":"plant_A1","line_id":"line_a1","role":"操作员"},"expected_filenames":["故障手册.txt"]}
+{"question":"F0013故障如何排查？","user_ctx":{"tenant_id":"tenant_A","plant_id":"plant_A1","line_id":"line_a1","role":"操作员"},"expected_filenames":["故障手册.txt"]}
+{"question":"F9999故障如何排查？","user_ctx":{"tenant_id":"tenant_A","plant_id":"plant_A1","line_id":"line_a1","role":"操作员"},"expected_filenames":[]}
+{"question":"F0012故障如何排查？","user_ctx":{"tenant_id":"tenant_B","plant_id":"plant_B1","line_id":"line_b1","role":"操作员"},"expected_filenames":[]}
