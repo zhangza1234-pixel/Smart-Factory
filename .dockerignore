@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+!.env.example
+!.env.deploy.example
+.venv
+venv
+__pycache__
+*.pyc
+chroma_db2
+data
+backups
+*.sql.gz
+*.log
+.agents
+.codex

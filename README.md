@@ -2,6 +2,8 @@
 
 基于 FastAPI、Streamlit、Chroma 和通义千问的工厂文档问答系统。
 
+腾讯云 Docker 部署、数据迁移及 Git 更新步骤见 [部署说明](deploy/README.md)。云端使用独立的 `compose.deploy.yaml` 和 `.env.deploy`，不影响现有本地配置。
+
 ## 本次 RAG 升级
 
 - 默认按标题层级和段落组织，章节内超长内容递归切分（默认 800 字、120 字重叠），保留章节路径、文件名、PDF 页码和正文位置。

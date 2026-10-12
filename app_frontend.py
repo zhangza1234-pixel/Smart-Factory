@@ -4,6 +4,7 @@ import streamlit as st
 import requests
 import json
 import time
+import os
 from datetime import date, timedelta
 from uuid import uuid4, UUID
 from streamlit_option_menu import option_menu
@@ -16,7 +17,7 @@ st.set_page_config(
 )
 
 # 后端API配置
-BACKEND_URL = "http://127.0.0.1:8000"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
 def post_backend(url, **kwargs):
